@@ -64,7 +64,7 @@ def checkPacket(packet):
     #     return
     print('^' * 1000)
     packetStr = str(scapy.packet.raw(packet))
-    if packetStr[72] == '1':
+    if packetStr[74] == '1':
         appendItem = [packet.sniffed_on, "{:3.2f}".format(float(str(time.time() - start_time))) \
             , "Yes", str([packet.summary()])]
     else:
