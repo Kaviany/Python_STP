@@ -1,81 +1,88 @@
 from scapy.all import *
 import scapy.all as scapy
 from scapy.all import STP
+from scapy.all import raw
+from scapy.all import bytes_hex
 import threading
 import csv
+from consts import Consts
 
-testingIP = "0.0.0.0"
-start_time = time.time()
-runtime = 20
-totalPackets = 1000
+start_time = 0
 allThreads = {}
-csvFields = ["interface", "time", "ID", "hexdump"]
-csvRows = []
-csvOutput = "output.csv"
+csvRowsR = []
+csvRowsS = []
 receivedPackets = []
+ifaceNum = 0
+xid = 0
+totalSender = 0
 
 
 def controller():
     currentTime = time.time() - start_time
-    # print("Time is {:.2f}: ".format(float(currentTime)))
-    if currentTime > runtime:
+    if currentTime > Consts.runtime:
         return False
     else:
         return True
 
 
 def sender(ifaceName):
-    print("sending from " + ifaceName)
     while controller():
-        # sendp(Ether() / IP(dst=testingIP, ttl=(1)), iface=ifaceName)
         src_mac = str(RandMAC())
         ethernet = Ether(dst='ff:ff:ff:ff:ff:ff', src=src_mac, type=0x800)
         ip = IP(src="0.0.0.0", dst="255.255.255.255")
         udp = UDP(sport=68, dport=67)
-        bootps = BOOTP(chaddr=src_mac, ciaddr='0.0.0.0', flags=1, xid=random.randint(0, 0xFFFFFFFF))
+        global totalSender, xid
+        # totalSender += 1
+        # if totalSender == ifaceNum - 1:
+        #     totalSender = 0
+        # if totalSender == 0:
+        xid = random.randint(0, 0xFFFFFFFF)
+        bootps = BOOTP(chaddr=src_mac, ciaddr='0.0.0.0', flags=1, xid=xid)
         dhcps = DHCP(options=[("message-type", "discover"), "end"])  # ack discover request
         pkt = ethernet / ip / udp / bootps / dhcps
-
+        appendItem = [ifaceName, "{:3.2f}".format(float(str(time.time() - start_time))) , hex(xid)]
+        csvRowsS.append(appendItem)
         sendp(pkt, iface=ifaceName, verbose=0)
-        # sendp(Ether(dst="01:80:c3:00:00:00") / LLC() / STP(), iface=ifaceName)
         print("Packet send to " + ifaceName)
-        time.sleep(runtime / totalPackets)
+        time.sleep(Consts.runtime / Consts.totalPackets)
         controller()
 
 
-def checkPacket(packet):
-    # if IP not in packet:
-    #     return
-    # if packet[IP].dst == testingIP:
+def checkPacketDHCP(packet):
+    print('*'*1000)
     iface = packet.sniffed_on
-    # print(ls(packet))
     hexPkt = hexdump(packet)
-    if hexPkt in receivedPackets:
-        receivedPackets.remove(hexPkt)
-    else:
-        receivedPackets.append(hexPkt)
-    print("%" * 100)
-    print(packet.show())
-    print("%" * 100)
-
+    receivedPackets.append(hexPkt)
     print("Received on " + iface + ".")
-    appendItem = [packet.sniffed_on, "{:3.2f}".format(float(str(time.time() - start_time))) \
-        , "hex(packet.xid)", str([packet.summary()])]
-    csvRows.append(appendItem)
-    print(hexdump(packet))
+    appendItem = [iface, "{:3.2f}".format(float(str(time.time() - start_time))) \
+        , hex(packet.xid), str([packet.summary()])]
+    csvRowsR.append(appendItem)
 
-
-def reciever(ifaceName):
-    if ifaceName == "":
-        # capture = sniff(prn=checkPacket, timeout=runtime)
-        capture = sniff(prn=checkPacket, iface=ifaceName, filter="stp", timeout=runtime)
+def checkPacket(packet):
+    # if packet.sniffed_on != Consts.mainIface:
+    #     checkPacketDHCP(packet)
+    #     return
+    print('^' * 1000)
+    packetStr = str(scapy.packet.raw(packet))
+    if packetStr[72] == '1':
+        appendItem = [packet.sniffed_on, "{:3.2f}".format(float(str(time.time() - start_time))) \
+            , "Yes", str([packet.summary()])]
     else:
-        capture = sniff(prn=checkPacket, iface=ifaceName, filter="stp", timeout=runtime)
-        # capture = sniff(prn=checkPacket, iface=ifaceName, filter="udp and (port 67 or 68)"
-        #                 , timeout=runtime)
+        appendItem = [packet.sniffed_on, "{:3.2f}".format(float(str(time.time() - start_time))) \
+            , "No", str([packet.summary()])]
+    csvRowsR.append(appendItem)
+
+
+def receiver(ifaceName):
+    if ifaceName != Consts.mainIface:
+        capture = sniff(prn=checkPacketDHCP, iface=ifaceName, filter='udp and (port 67 or port 68)'
+                    , timeout=Consts.runtime)
+    else:
+        capture = sniff(prn=checkPacket, iface=ifaceName, filter="stp", timeout=Consts.runtime)
 
 
 if __name__ == "__main__":
+    start_time = time.time()
     interfaces = scapy.get_if_list()
 
     ifaceNum = interfaces.__len__()
@@ -86,28 +93,36 @@ if __name__ == "__main__":
     for i in range(ifaceNum):
         if interfaces[i] == "lo":
             continue
-        # if not firstSender:
-        #     firstSender = not firstSender
-        #     thread = threading.Thread(target=sender, args=(interfaces[i],), daemon=True)
-        #     allThreads["S_" + interfaces[i]] = thread
-        #     thread.start()
-        thread = threading.Thread(target=reciever, args=(interfaces[i],), daemon=True)
+
+        if interfaces[i] == Consts.mainIface:
+            thread = threading.Thread(target=sender, args=(interfaces[i],), daemon=True)
+            allThreads["S_" + interfaces[i]] = thread
+            thread.start()
+
+        thread = threading.Thread(target=receiver, args=(interfaces[i],), daemon=True)
         allThreads["R_" + interfaces[i]] = thread
         thread.start()
 
-    # reciever("")
+
     for thread in allThreads:
         allThreads[thread].join()
-    if len(receivedPackets) > 0:
-        for pkt in receivedPackets:
-            print(pkt)
-    print(receivedPackets)
-    with open(csvOutput, 'w') as csvfile:
+
+    with open(Consts.csvOutputR, 'w') as csvfile:
         # creating a csv writer object
         csvwriter = csv.writer(csvfile)
 
         # writing the fields
-        csvwriter.writerow(csvFields)
+        csvwriter.writerow(Consts.csvFieldsR)
 
         # writing the data rows
-        csvwriter.writerows(csvRows)
+        csvwriter.writerows(csvRowsR)
+
+    with open(Consts.csvOutputS, 'w') as csvfile:
+        # creating a csv writer object
+        csvwriter = csv.writer(csvfile)
+
+        # writing the fields
+        csvwriter.writerow(Consts.csvFieldsR)
+
+        # writing the data rows
+        csvwriter.writerows(csvRowsS)
